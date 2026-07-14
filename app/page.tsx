@@ -3,6 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { zipSync } from "fflate";
 
 type Stage = "welcome" | "camera" | "review" | "sheet";
 
@@ -185,6 +186,24 @@ function saveBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
+function dataUrlToBytes(dataUrl: string) {
+  const encoded = dataUrl.split(",")[1];
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function saveShotBackup(shots: string[], groupNumber: number) {
+  const files = shots.reduce<Record<string, Uint8Array>>((backupFiles, shot, index) => {
+    backupFiles[`shot-${String(index + 1).padStart(2, "0")}.jpg`] = dataUrlToBytes(shot);
+    return backupFiles;
+  }, {});
+  const zipped = zipSync(files, { level: 0 });
+  const filename = `gawad-parangal-group-${String(groupNumber).padStart(2, "0")}-original-shots.zip`;
+  saveBlob(new Blob([zipped], { type: "application/zip" }), filename);
+}
+
 function saveDataUrl(dataUrl: string, filename: string) {
   const link = document.createElement("a");
   link.href = dataUrl;
@@ -209,6 +228,7 @@ export default function Home() {
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
   const [autoPrint, setAutoPrint] = useState(true);
   const [layoutMessage, setLayoutMessage] = useState("");
+  const [backupMessage, setBackupMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runTokenRef = useRef(0);
@@ -366,8 +386,12 @@ export default function Home() {
     const completedShots = photos.filter((photo): photo is string => Boolean(photo));
     if (completedShots.length !== SHOTS_PER_GROUP) return;
     setIsComposing(true);
-    setLayoutMessage("Building your high-resolution event strip…");
+    setBackupMessage("");
+    setLayoutMessage("Saving the original 3-shot backup...");
     try {
+      saveShotBackup(completedShots, groups.length + 1);
+      setBackupMessage(`Group ${groups.length + 1} original shots downloaded to this device.`);
+      setLayoutMessage("Building your high-resolution event strip...");
       const stripUrl = await composeStrip(completedShots);
       const nextGroup: PhotoGroup = {
         id: `${Date.now()}-${groups.length}`,
@@ -449,7 +473,7 @@ export default function Home() {
                   <span><CameraIcon /></span> {groups.length ? `Capture group ${groups.length + 1}` : "Start photo session"} <b>→</b>
                 </button>
               </div>
-              <p className="privacy-note"><span>●</span> Camera access stays on this device. Photos are only used for this print.</p>
+              <p className="privacy-note"><span>●</span> Camera access stays on this device. Each approved group downloads a 3-shot backup ZIP.</p>
 
               {groups.length > 0 && (
                 <div className="group-queue" aria-label="Groups ready for printing">
@@ -544,6 +568,7 @@ export default function Home() {
               <button type="button" className="quiet-button" onClick={cancelCapture} disabled={isComposing}>Discard session</button>
               <div>
                 <label className="auto-print-toggle"><input type="checkbox" checked={autoPrint} onChange={(event) => setAutoPrint(event.target.checked)} /><span /><b>Auto-open print when group 4 is ready</b></label>
+                {backupMessage && <p className="backup-message">{backupMessage}</p>}
                 <button type="button" className="approve-button" onClick={approveGroup} disabled={isComposing}>
                   {isComposing ? <><span className="spinner small" /> {layoutMessage}</> : <>Use these photos <b>→</b></>}
                 </button>

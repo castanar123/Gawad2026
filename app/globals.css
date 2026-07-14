@@ -164,6 +164,7 @@ h1 em { color: #a86d16; font-weight: 400; }
 .auto-print-toggle span::after { content: ""; width: 12px; height: 12px; position: absolute; left: 3px; top: 3px; border-radius: 50%; background: white; transition: transform .2s ease; }
 .auto-print-toggle input:checked + span { background: var(--navy); }
 .auto-print-toggle input:checked + span::after { transform: translateX(14px); background: #edc66f; }
+.backup-message { margin: -4px 0 0; color: #1b6e3a; font-size: 12px; font-weight: 700; text-align: right; }
 .approve-button { min-width: 245px; min-height: 54px; padding: 0 20px; display: flex; align-items: center; justify-content: center; gap: 10px; border: 0; border-radius: 11px; background: var(--navy); color: white; box-shadow: 0 14px 27px #071a3b32; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .approve-button b { color: #efc66e; font-size: 17px; }
 
