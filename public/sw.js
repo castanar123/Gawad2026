@@ -1,6 +1,7 @@
-const CACHE_NAME = "gawad-parangal-pwa-v3";
+const CACHE_NAME = "gawad-parangal-pwa-v4";
 const APP_SHELL = [
   "/",
+  "/phone",
   "/manifest.webmanifest",
   "/favicon.svg",
   "/lspu-event-strip.png",
