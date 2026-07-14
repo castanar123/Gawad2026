@@ -39,6 +39,10 @@ const DownloadIcon = () => (
   <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 20h16" /></svg>
 );
 
+const SwitchCameraIcon = () => (
+  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3" /></svg>
+);
+
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function loadImage(source: string): Promise<HTMLImageElement> {
@@ -222,6 +226,10 @@ export default function Home() {
   const [sequenceRunning, setSequenceRunning] = useState(false);
   const [cameraState, setCameraState] = useState<"idle" | "starting" | "ready" | "error">("idle");
   const [cameraMessage, setCameraMessage] = useState("");
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [activeCameraId, setActiveCameraId] = useState("");
+  const [mirrorCamera, setMirrorCamera] = useState(true);
+  const [cameraOperation, setCameraOperation] = useState<"reset" | "switch" | null>(null);
   const [flash, setFlash] = useState(false);
   const [betweenShots, setBetweenShots] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -270,21 +278,29 @@ export default function Home() {
     }
   }, [stage]);
 
-  const ensureCamera = async () => {
+  const ensureCamera = async (deviceId?: string) => {
     setCameraState("starting");
     setCameraMessage("Opening the camera…");
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera access is not supported in this browser.");
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
-          facingMode: "user",
+          ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "user" } }),
           width: { ideal: 3840 },
           height: { ideal: 2160 },
         },
       });
       streamRef.current = stream;
       await attachCamera();
+      const videoTrack = stream.getVideoTracks()[0];
+      const settings = videoTrack.getSettings();
+      const videoDevices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput");
+      setCameras(videoDevices);
+      setActiveCameraId(settings.deviceId || deviceId || "");
+      setMirrorCamera(settings.facingMode !== "environment");
       setCameraState("ready");
       setCameraMessage("");
       return true;
@@ -304,6 +320,22 @@ export default function Home() {
     await ensureCamera();
   };
 
+  const resetCamera = async () => {
+    if (sequenceRunning) return;
+    setCameraOperation("reset");
+    await ensureCamera(activeCameraId || undefined);
+    setCameraOperation(null);
+  };
+
+  const switchCamera = async () => {
+    if (sequenceRunning || cameras.length < 2) return;
+    const activeIndex = cameras.findIndex((camera) => camera.deviceId === activeCameraId);
+    const nextCamera = cameras[(activeIndex + 1 + cameras.length) % cameras.length];
+    setCameraOperation("switch");
+    await ensureCamera(nextCamera.deviceId);
+    setCameraOperation(null);
+  };
+
   const captureFrame = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) throw new Error("The camera is not ready yet.");
@@ -315,8 +347,10 @@ export default function Home() {
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.filter = "brightness(1.02) contrast(1.045) saturate(1.05)";
-    context.translate(canvas.width, 0);
-    context.scale(-1, 1);
+    if (mirrorCamera) {
+      context.translate(canvas.width, 0);
+      context.scale(-1, 1);
+    }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.96);
   };
@@ -425,7 +459,11 @@ export default function Home() {
   };
 
   const deleteGroup = (index: number) => {
-    setGroups((current) => current.filter((_, groupIndex) => groupIndex !== index));
+    const nextGroups = groups.filter((_, groupIndex) => groupIndex !== index);
+    setGroups(nextGroups);
+    setSheetUrl(null);
+    setLayoutMessage("");
+    if (stage === "sheet") setStage("welcome");
   };
 
   const downloadPdf = () => {
@@ -450,7 +488,7 @@ export default function Home() {
       <main className={`site-shell stage-${stage}`}>
         <header className="topbar no-print">
           <button className="brand" type="button" onClick={() => !sequenceRunning && setStage("welcome")} aria-label="Gawad Parangal Photo Booth home">
-            <span className="brand-mark"><CameraIcon /></span>
+            <span className="brand-mark"><img className="lspu-logo-source" src="/lspu-brand-source.png" alt="" /></span>
             <span><strong>Gawad Parangal</strong><small>PHOTO BOOTH</small></span>
           </button>
           <div className="topbar-actions">
@@ -513,10 +551,14 @@ export default function Home() {
 
             <div className="camera-layout">
               <div className={`camera-frame ${flash ? "flash" : ""}`}>
-                <video ref={videoRef} muted playsInline aria-label="Live camera preview" />
+                <video className={mirrorCamera ? "mirrored" : ""} ref={videoRef} muted playsInline aria-label="Live camera preview" />
                 <div className="frame-corners" aria-hidden="true"><i /><i /><i /><i /></div>
+                <div className="camera-controls" aria-label="Camera controls">
+                  <button type="button" onClick={resetCamera} disabled={sequenceRunning || cameraState === "starting"} aria-label="Reset camera"><RetryIcon /> <span>{cameraOperation === "reset" ? "Resetting" : "Reset camera"}</span></button>
+                  <button type="button" onClick={switchCamera} disabled={sequenceRunning || cameraState === "starting" || cameras.length < 2} aria-label="Switch camera"><SwitchCameraIcon /> <span>{cameraOperation === "switch" ? "Switching" : cameras.length < 2 ? "One camera" : "Switch camera"}</span></button>
+                </div>
                 {cameraState === "starting" && <div className="camera-cover"><span className="spinner" /><strong>Opening camera</strong><small>Please allow access when your browser asks.</small></div>}
-                {cameraState === "error" && <div className="camera-cover error-cover"><b>!</b><strong>Camera needs attention</strong><small>{cameraMessage}</small><button type="button" onClick={ensureCamera}>Try camera again</button></div>}
+                {cameraState === "error" && <div className="camera-cover error-cover"><b>!</b><strong>Camera needs attention</strong><small>{cameraMessage}</small><button type="button" onClick={() => ensureCamera()}>Try camera again</button></div>}
                 {countdown !== null && <div className="countdown"><small>Photo {shotIndex + 1} of {SHOTS_PER_GROUP}</small><strong key={countdown}>{countdown}</strong><span>Get ready</span></div>}
                 {betweenShots && <div className="between-shots"><span>✓</span><strong>Lovely!</strong><small>Getting the next shot ready…</small></div>}
                 {flash && <div className="flash-layer" />}
@@ -584,6 +626,15 @@ export default function Home() {
               <h2>Four groups.<br /><em>Ready to print.</em></h2>
               <p>The first three strips run vertically. The fourth sits across the bottom, matching your supplied A4 layout.</p>
               <div className="quality-card"><span>300</span><p><strong>DPI print canvas</strong><small>2480 × 3508 px · A4 portrait</small></p></div>
+              <div className="sheet-group-editor" aria-label="Four strips on this sheet">
+                {groups.map((group, index) => (
+                  <div className="sheet-group" key={group.id}>
+                    <img src={group.stripUrl} alt={`Group ${index + 1} strip`} />
+                    <span>Group {index + 1}</span>
+                    <button type="button" onClick={() => deleteGroup(index)} aria-label={`Remove group ${index + 1} from sheet`}>Remove</button>
+                  </div>
+                ))}
+              </div>
               {layoutMessage && <div className="composing-note"><span className="spinner" /> {layoutMessage}</div>}
               <div className="sheet-actions">
                 <button type="button" className="print-button" onClick={() => window.print()} disabled={!sheetUrl}><PrinterIcon /> Print A4 sheet</button>

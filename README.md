@@ -4,11 +4,11 @@ A browser-based event booth for the 5th Gawad Parangal at LSPU Los Baños Campus
 
 ## Booth flow
 
-1. Allow camera access and begin a session.
+1. Allow camera access and begin a session. The operator can reset the active camera or switch between available camera devices.
 2. The booth takes three full-resolution shots with a 10-second countdown before each photo.
 3. Review the set and retake any individual photo.
 4. Approve the set. The booth downloads one ZIP backup containing the three original shots to the device.
-5. Approve four groups. The booth inserts every set into the supplied event strip and composes one 300 DPI A4 sheet: three vertical strips on top and one rotated strip below.
+5. Approve four groups. The booth inserts every set into the supplied event strip and composes one 300 DPI A4 sheet: three vertical strips on top and one rotated strip below. Any strip can be removed from the completed sheet and recaptured before final printing.
 6. Print directly, export a real single-page PDF, or save the high-resolution A4 JPG.
 
 Photos remain in browser memory and are cleared when a new A4 sheet begins or the page closes. The downloaded ZIP backup is the device-local copy for each group.
