@@ -13,6 +13,12 @@ A browser-based event booth for the 5th Gawad Parangal at LSPU Los Baños Campus
 
 Photos remain in browser memory and are cleared when a new A4 sheet begins or the page closes. The downloaded ZIP backup is the device-local copy for each group.
 
+## Offline installation
+
+The production site is an installable PWA. Open it once while online so the service worker can cache the booth, event template, logo, and built application files. Use **Install app** in the top bar or the browser's **Add to Home Screen / Install app** command. After installation, the booth can reopen and capture, review, export, and print photos without Wi-Fi. Camera permission and downloaded shot backups remain device-local.
+
+Development mode does not register the service worker, which prevents stale cached files from interfering with local code changes.
+
 ## Local use
 
 ```bash

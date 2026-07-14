@@ -1,0 +1,19 @@
+{
+  "name": "Gawad Parangal Photo Booth",
+  "short_name": "Gawad Booth",
+  "description": "Offline-ready three-shot photo booth for the 5th Gawad Parangal at LSPU Los Baños Campus.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8f1e4",
+  "theme_color": "#071a3b",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

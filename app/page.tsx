@@ -13,6 +13,11 @@ type PhotoGroup = {
   stripUrl: string;
 };
 
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
 const TEMPLATE_URL = "/lspu-event-strip.png";
 const SHOTS_PER_GROUP = 3;
 const GROUPS_PER_SHEET = 4;
@@ -230,6 +235,7 @@ export default function Home() {
   const [activeCameraId, setActiveCameraId] = useState("");
   const [mirrorCamera, setMirrorCamera] = useState(true);
   const [cameraOperation, setCameraOperation] = useState<"reset" | "switch" | null>(null);
+  const [cameraResolution, setCameraResolution] = useState("");
   const [flash, setFlash] = useState(false);
   const [betweenShots, setBetweenShots] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -240,6 +246,10 @@ export default function Home() {
   const [autoPrint, setAutoPrint] = useState(true);
   const [layoutMessage, setLayoutMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [offlineReady, setOfflineReady] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [installMessage, setInstallMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runTokenRef = useRef(0);
@@ -254,6 +264,32 @@ export default function Home() {
   useEffect(() => () => {
     runTokenRef.current += 1;
     streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  useEffect(() => {
+    const updateConnection = () => setIsOnline(navigator.onLine);
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+
+    window.addEventListener("online", updateConnection);
+    window.addEventListener("offline", updateConnection);
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+
+    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+      void navigator.serviceWorker.register("/sw.js", { scope: "/" }).then(() => navigator.serviceWorker.ready).then(() => {
+        setOfflineReady(true);
+      }).catch(() => {
+        setOfflineReady(false);
+      });
+    }
+
+    return () => {
+      window.removeEventListener("online", updateConnection);
+      window.removeEventListener("offline", updateConnection);
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+    };
   }, []);
 
   const waitForVideo = async () => {
@@ -308,16 +344,21 @@ export default function Home() {
           ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "user" } }),
           width: { ideal: 3840 },
           height: { ideal: 2160 },
+          frameRate: { ideal: 30 },
         },
       });
       streamRef.current = stream;
-      await attachCamera();
+      const video = await attachCamera();
       const videoTrack = stream.getVideoTracks()[0];
       const settings = videoTrack.getSettings();
+      videoTrack.contentHint = "detail";
       const videoDevices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput");
       setCameras(videoDevices);
       setActiveCameraId(settings.deviceId || deviceId || "");
       setMirrorCamera(settings.facingMode !== "environment");
+      const width = settings.width || video.videoWidth;
+      const height = settings.height || video.videoHeight;
+      setCameraResolution(width && height ? `${width} × ${height}` : "Native resolution");
       setCameraState("ready");
       setCameraMessage("");
       return true;
@@ -353,6 +394,17 @@ export default function Home() {
     setCameraOperation("switch");
     await ensureCamera(nextCamera.deviceId);
     setCameraOperation(null);
+  };
+
+  const installOfflineApp = async () => {
+    if (!installPrompt) {
+      setInstallMessage(offlineReady ? "Offline files are cached. Use your browser menu and choose Install app or Add to Home Screen." : "Use your browser menu and choose Install app or Add to Home Screen after the first online visit.");
+      return;
+    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    setInstallMessage(choice.outcome === "accepted" ? "Photo Booth installed for offline use." : "Installation was cancelled. You can install it later from the browser menu.");
+    if (choice.outcome === "accepted") setInstallPrompt(null);
   };
 
   const captureFrame = () => {
@@ -540,9 +592,11 @@ export default function Home() {
           </button>
           <div className="topbar-actions">
             <div className="sheet-progress"><span>{groups.length}</span><i>of {GROUPS_PER_SHEET}</i><b>{progressText}</b></div>
+            <button type="button" className={`pwa-install ${isOnline ? "" : "offline"}`} onClick={installOfflineApp}><span />{!isOnline ? "Offline mode" : installPrompt ? "Install app" : offlineReady ? "Offline ready" : "Enable offline"}</button>
             <div className="event-pill"><span /> LSPU Los Baños Campus · 2026</div>
           </div>
         </header>
+        {installMessage && <div className="pwa-message no-print" role="status"><span>{installMessage}</span><button type="button" onClick={() => setInstallMessage("")} aria-label="Dismiss offline message">×</button></div>}
 
         {stage === "welcome" && (
           <section className="hero no-print">
@@ -609,13 +663,14 @@ export default function Home() {
                   <button type="button" onClick={resetCamera} disabled={sequenceRunning || cameraState === "starting"} aria-label="Reset camera"><RetryIcon /> <span>{cameraOperation === "reset" ? "Resetting" : "Reset camera"}</span></button>
                   <button type="button" onClick={switchCamera} disabled={sequenceRunning || cameraState === "starting" || cameras.length < 2} aria-label="Switch camera"><SwitchCameraIcon /> <span>{cameraOperation === "switch" ? "Switching" : cameras.length < 2 ? "One camera" : "Switch camera"}</span></button>
                 </div>
+                {sequenceRunning && <button type="button" className={`floating-pause-control ${paused ? "paused" : ""}`} onClick={togglePause}>{paused ? "▶ Resume capture" : "Ⅱ Pause timer"}</button>}
                 {cameraState === "starting" && <div className="camera-cover"><span className="spinner" /><strong>Opening camera</strong><small>Please allow access when your browser asks.</small></div>}
                 {cameraState === "error" && <div className="camera-cover error-cover"><b>!</b><strong>Camera needs attention</strong><small>{cameraMessage}</small><button type="button" onClick={() => ensureCamera()}>Try camera again</button></div>}
                 {countdown !== null && <div className="countdown"><small>Photo {shotIndex + 1} of {SHOTS_PER_GROUP}</small><strong key={countdown}>{countdown}</strong><span>Get ready</span></div>}
                 {betweenShots && <div className="between-shots"><span>✓</span><strong>Lovely!</strong><small>Getting the next shot ready…</small></div>}
                 {paused && sequenceRunning && <div className="pause-layer"><span>Ⅱ</span><strong>Session paused</strong><small>Your countdown is frozen.</small><button type="button" onClick={togglePause}>Resume capture</button></div>}
                 {flash && <div className="flash-layer" />}
-                {cameraState === "ready" && !sequenceRunning && <div className="camera-ready"><span /> Camera ready</div>}
+                {cameraState === "ready" && !sequenceRunning && <div className="camera-ready"><span /> Camera ready <b>{cameraResolution}</b></div>}
               </div>
 
               <aside className="session-panel">
