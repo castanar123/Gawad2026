@@ -600,6 +600,11 @@ export default function Home() {
               <div className={`camera-frame ${flash ? "flash" : ""}`}>
                 <video className={mirrorCamera ? "mirrored" : ""} ref={videoRef} muted playsInline aria-label="Live camera preview" />
                 <div className="frame-corners" aria-hidden="true"><i /><i /><i /><i /></div>
+                <div className="camera-design-overlay" aria-hidden="true">
+                  <i className="overlay-flourish flourish-left" />
+                  <i className="overlay-flourish flourish-right" />
+                  <span className="camera-event-watermark"><b>5th</b><em>Gawad Parangal</em><small>2026 · LSPU Los Baños Campus</small></span>
+                </div>
                 <div className="camera-controls" aria-label="Camera controls">
                   <button type="button" onClick={resetCamera} disabled={sequenceRunning || cameraState === "starting"} aria-label="Reset camera"><RetryIcon /> <span>{cameraOperation === "reset" ? "Resetting" : "Reset camera"}</span></button>
                   <button type="button" onClick={switchCamera} disabled={sequenceRunning || cameraState === "starting" || cameras.length < 2} aria-label="Switch camera"><SwitchCameraIcon /> <span>{cameraOperation === "switch" ? "Switching" : cameras.length < 2 ? "One camera" : "Switch camera"}</span></button>
