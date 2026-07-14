@@ -232,14 +232,18 @@ export default function Home() {
   const [cameraOperation, setCameraOperation] = useState<"reset" | "switch" | null>(null);
   const [flash, setFlash] = useState(false);
   const [betweenShots, setBetweenShots] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
+  const [reviewStripUrl, setReviewStripUrl] = useState<string | null>(null);
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
   const [autoPrint, setAutoPrint] = useState(true);
   const [layoutMessage, setLayoutMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runTokenRef = useRef(0);
+  const pausedRef = useRef(false);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -278,6 +282,19 @@ export default function Home() {
     }
   }, [stage]);
 
+  useEffect(() => {
+    if (stage !== "review") return;
+    const completedShots = photos.filter((photo): photo is string => Boolean(photo));
+    if (completedShots.length !== SHOTS_PER_GROUP) return;
+    let active = true;
+    void composeStrip(completedShots).then((strip) => {
+      if (active) setReviewStripUrl(strip);
+    }).catch((error) => {
+      if (active) setCameraMessage(error instanceof Error ? error.message : "The strip preview could not be prepared.");
+    });
+    return () => { active = false; };
+  }, [photos, stage]);
+
   const ensureCamera = async (deviceId?: string) => {
     setCameraState("starting");
     setCameraMessage("Opening the camera…");
@@ -314,6 +331,8 @@ export default function Home() {
   const openBooth = async () => {
     setStage("camera");
     setPhotos([null, null, null]);
+    setReviewStripUrl(null);
+    setSelectedPhotoIndex(0);
     setShotIndex(0);
     setCountdown(null);
     await sleep(50);
@@ -355,10 +374,34 @@ export default function Home() {
     return canvas.toDataURL("image/jpeg", 0.96);
   };
 
+  const waitForActiveDelay = async (milliseconds: number, token: number) => {
+    let remaining = milliseconds;
+    while (remaining > 0) {
+      if (runTokenRef.current !== token) return false;
+      if (pausedRef.current) {
+        await sleep(120);
+        continue;
+      }
+      const interval = Math.min(remaining, 120);
+      await sleep(interval);
+      remaining -= interval;
+    }
+    return runTokenRef.current === token;
+  };
+
+  const togglePause = () => {
+    const nextPaused = !pausedRef.current;
+    pausedRef.current = nextPaused;
+    setPaused(nextPaused);
+  };
+
   const runSequence = async (indices: number[]) => {
     if (!streamRef.current && !(await ensureCamera())) return;
+    setReviewStripUrl(null);
     const token = runTokenRef.current + 1;
     runTokenRef.current = token;
+    pausedRef.current = false;
+    setPaused(false);
     setSequenceRunning(true);
     setCameraMessage("");
     const workingPhotos = [...photos];
@@ -371,7 +414,7 @@ export default function Home() {
         for (let value = COUNTDOWN_SECONDS; value >= 1; value -= 1) {
           if (runTokenRef.current !== token) return;
           setCountdown(value);
-          await sleep(1000);
+          if (!(await waitForActiveDelay(1000, token))) return;
         }
         if (runTokenRef.current !== token) return;
         setCountdown(null);
@@ -384,7 +427,7 @@ export default function Home() {
 
         if (position < indices.length - 1) {
           setBetweenShots(true);
-          await sleep(1250);
+          if (!(await waitForActiveDelay(1250, token))) return;
         }
       }
       if (runTokenRef.current === token) setStage("review");
@@ -392,6 +435,8 @@ export default function Home() {
       setCameraMessage(error instanceof Error ? error.message : "The shot could not be captured.");
     } finally {
       if (runTokenRef.current === token) {
+        pausedRef.current = false;
+        setPaused(false);
         setCountdown(null);
         setBetweenShots(false);
         setSequenceRunning(false);
@@ -408,6 +453,8 @@ export default function Home() {
 
   const cancelCapture = () => {
     runTokenRef.current += 1;
+    pausedRef.current = false;
+    setPaused(false);
     setSequenceRunning(false);
     setCountdown(null);
     setBetweenShots(false);
@@ -561,13 +608,14 @@ export default function Home() {
                 {cameraState === "error" && <div className="camera-cover error-cover"><b>!</b><strong>Camera needs attention</strong><small>{cameraMessage}</small><button type="button" onClick={() => ensureCamera()}>Try camera again</button></div>}
                 {countdown !== null && <div className="countdown"><small>Photo {shotIndex + 1} of {SHOTS_PER_GROUP}</small><strong key={countdown}>{countdown}</strong><span>Get ready</span></div>}
                 {betweenShots && <div className="between-shots"><span>✓</span><strong>Lovely!</strong><small>Getting the next shot ready…</small></div>}
+                {paused && sequenceRunning && <div className="pause-layer"><span>Ⅱ</span><strong>Session paused</strong><small>Your countdown is frozen.</small><button type="button" onClick={togglePause}>Resume capture</button></div>}
                 {flash && <div className="flash-layer" />}
                 {cameraState === "ready" && !sequenceRunning && <div className="camera-ready"><span /> Camera ready</div>}
               </div>
 
               <aside className="session-panel">
                 <p className="panel-kicker">Your session</p>
-                <h3>{sequenceRunning ? `Capturing photo ${shotIndex + 1}` : photos.some(Boolean) ? "Ready to retake" : "Ready when you are"}</h3>
+                <h3>{paused ? "Session paused" : sequenceRunning ? `Capturing photo ${shotIndex + 1}` : photos.some(Boolean) ? "Ready to retake" : "Ready when you are"}</h3>
                 <div className="mini-shots">
                   {photos.map((photo, index) => (
                     <div className={`mini-shot ${index === shotIndex && sequenceRunning ? "current" : ""} ${photo ? "done" : ""}`} key={index}>
@@ -583,7 +631,7 @@ export default function Home() {
                     <CameraIcon /> {photos.some(Boolean) ? "Retake this shot" : "Begin 3-shot capture"}
                   </button>
                 )}
-                {sequenceRunning && <button type="button" className="secondary-wide" onClick={cancelCapture}>Cancel countdown</button>}
+                {sequenceRunning && <div className="sequence-controls"><button type="button" className="pause-button" onClick={togglePause}>{paused ? "Resume" : "Pause"}</button><button type="button" className="secondary-wide" onClick={cancelCapture}>Cancel countdown</button></div>}
                 <p className="look-note">Look at the camera lens—not your reflection—for the best result.</p>
               </aside>
             </div>
@@ -597,14 +645,27 @@ export default function Home() {
               <h2>Three great moments.</h2>
               <p>Keep them all, or retake any photo before it goes into the event strip.</p>
             </div>
-            <div className="review-grid">
-              {photos.map((photo, index) => (
-                <article className="review-photo" key={index}>
-                  {photo && <img src={photo} alt={`Photo ${index + 1} preview`} />}
-                  <span className="photo-label">0{index + 1}</span>
-                  <button type="button" onClick={() => retakeShot(index)} disabled={isComposing}><RetryIcon /> Retake</button>
-                </article>
-              ))}
+            <div className="review-workspace">
+              <div className="strip-review-card">
+                <div className="strip-review-heading"><span>Final strip preview</span><strong>Click a photo to inspect it</strong></div>
+                <div className="review-strip-preview">
+                  {reviewStripUrl ? <img src={reviewStripUrl} alt="Completed event strip preview containing the three selected photos" /> : <div className="strip-preview-loading"><span className="spinner" /><small>Building strip preview</small></div>}
+                  {photos.map((photo, index) => (
+                    <button type="button" className={`strip-photo-target target-${index + 1} ${selectedPhotoIndex === index ? "selected" : ""}`} key={index} onClick={() => setSelectedPhotoIndex(index)} aria-label={`Zoom photo ${index + 1}`} disabled={!photo || isComposing}><span>0{index + 1}</span></button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="selected-photo-card">
+                <div className="selected-photo-heading"><p><span>Selected photo</span><strong>Photo {selectedPhotoIndex + 1} of {SHOTS_PER_GROUP}</strong></p><small>Zoomed preview</small></div>
+                <div className="selected-photo-zoom">{photos[selectedPhotoIndex] && <img src={photos[selectedPhotoIndex]} alt={`Selected photo ${selectedPhotoIndex + 1} enlarged preview`} />}</div>
+                <div className="photo-selector" aria-label="Choose a photo to inspect">
+                  {photos.map((photo, index) => (
+                    <button type="button" className={selectedPhotoIndex === index ? "selected" : ""} key={index} onClick={() => setSelectedPhotoIndex(index)} aria-label={`Select photo ${index + 1}`}>{photo && <img src={photo} alt="" />}<span>0{index + 1}</span></button>
+                  ))}
+                </div>
+                <button type="button" className="retake-selected" onClick={() => retakeShot(selectedPhotoIndex)} disabled={isComposing}><RetryIcon /> Retake selected photo</button>
+              </div>
             </div>
             <div className="review-actions">
               <button type="button" className="quiet-button" onClick={cancelCapture} disabled={isComposing}>Discard session</button>
