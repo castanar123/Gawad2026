@@ -219,12 +219,14 @@ async function composeA4(groups: PhotoGroup[]) {
   });
 
   const lastStrip = strips[3];
-  const landscapeY = topMargin + stripHeight + rowGap;
-  context.save();
-  context.translate(sideMargin + stripHeight, landscapeY);
-  context.rotate(Math.PI / 2);
-  context.drawImage(lastStrip, 0, 0, stripWidth, stripHeight);
-  context.restore();
+  if (lastStrip) {
+    const landscapeY = topMargin + stripHeight + rowGap;
+    context.save();
+    context.translate(sideMargin + stripHeight, landscapeY);
+    context.rotate(Math.PI / 2);
+    context.drawImage(lastStrip, 0, 0, stripWidth, stripHeight);
+    context.restore();
+  }
 
   return canvas.toDataURL("image/jpeg", 0.985);
 }
@@ -382,7 +384,7 @@ export default function Home() {
       setSheetUrl(savedSession.sheetUrl);
       setSelectedPhotoIndex(savedSession.selectedPhotoIndex);
       setAutoPrint(savedSession.autoPrint);
-      if (savedSession.groups.length === GROUPS_PER_SHEET && savedSession.sheetUrl) setStage("sheet");
+      if (savedSession.groups.length > 0 && savedSession.sheetUrl && savedSession.stage === "sheet") setStage("sheet");
       else if (savedSession.photos.every(Boolean)) setStage("review");
       else setStage("welcome");
     }).catch(() => undefined).finally(() => {
@@ -653,6 +655,7 @@ export default function Home() {
       };
       const nextGroups = [...groups, nextGroup];
       setGroups(nextGroups);
+      setSheetUrl(null);
       stopCamera();
 
       if (nextGroups.length === GROUPS_PER_SHEET) {
@@ -688,6 +691,29 @@ export default function Home() {
   const downloadPdf = () => {
     if (!sheetUrl) return;
     saveBlob(buildPdfFromJpeg(sheetUrl), "gawad-parangal-photo-strips-a4.pdf");
+  };
+
+  const printCurrentGroups = async () => {
+    if (groups.length === 0 || isComposing) return;
+    setIsComposing(true);
+    setLayoutMessage(`Arranging ${groups.length} saved group${groups.length === 1 ? "" : "s"} on A4...`);
+    try {
+      const currentSheet = await composeA4(groups);
+      setSheetUrl(currentSheet);
+      setStage("sheet");
+      setLayoutMessage("");
+      setTimeout(() => window.print(), 650);
+    } catch (error) {
+      setLayoutMessage(error instanceof Error ? error.message : "The current A4 sheet could not be prepared.");
+    } finally {
+      setIsComposing(false);
+    }
+  };
+
+  const continueAddingGroups = () => {
+    setSheetUrl(null);
+    setLayoutMessage("");
+    setStage("welcome");
   };
 
   const startNewSheet = () => {
@@ -746,6 +772,9 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
+                  <button type="button" className="print-current-sheet" onClick={printCurrentGroups} disabled={isComposing}>
+                    {isComposing ? <><span className="spinner small" /> {layoutMessage}</> : <><PrinterIcon /> Print {groups.length} saved group{groups.length === 1 ? "" : "s"} now</>}
+                  </button>
                 </div>
               )}
             </div>
@@ -864,9 +893,9 @@ export default function Home() {
         {stage === "sheet" && (
           <section className="sheet-screen no-print">
             <div className="sheet-copy">
-              <p className="eyebrow"><span /> A4 sheet complete</p>
-              <h2>Four groups.<br /><em>Ready to print.</em></h2>
-              <p>The first three strips run vertically. The fourth sits across the bottom, matching your supplied A4 layout.</p>
+              <p className="eyebrow"><span /> {groups.length === GROUPS_PER_SHEET ? "A4 sheet complete" : "Current A4 sheet"}</p>
+              <h2>{groups.length} group{groups.length === 1 ? "" : "s"}.<br /><em>Ready to print.</em></h2>
+              <p>{groups.length === GROUPS_PER_SHEET ? "The first three strips run vertically. The fourth sits across the bottom, matching your supplied A4 layout." : `Your ${groups.length} saved strip${groups.length === 1 ? " is" : "s are"} placed in the original A4 positions. Unused positions stay blank.`}</p>
               <div className="quality-card"><span>300</span><p><strong>DPI print canvas</strong><small>2480 × 3508 px · A4 portrait</small></p></div>
               <div className="sheet-group-editor" aria-label="Four strips on this sheet">
                 {groups.map((group, index) => (
@@ -883,13 +912,14 @@ export default function Home() {
                 <button type="button" className="download-button" onClick={downloadPdf} disabled={!sheetUrl}><DownloadIcon /> Export PDF</button>
                 <button type="button" className="download-button secondary-download" onClick={() => sheetUrl && saveDataUrl(sheetUrl, "gawad-parangal-photo-strips-a4.jpg")} disabled={!sheetUrl}><DownloadIcon /> High-res JPG</button>
               </div>
-              <button type="button" className="new-sheet-button" onClick={startNewSheet}>Start a new A4 sheet <span>→</span></button>
+              {groups.length < GROUPS_PER_SHEET && <button type="button" className="new-sheet-button continue-sheet-button" onClick={continueAddingGroups}>Continue adding groups <span>→</span></button>}
+              <button type="button" className="new-sheet-button" onClick={startNewSheet}>Clear and start a new A4 sheet <span>→</span></button>
               <p className="print-tip"><strong>Print tip:</strong> choose A4, portrait, 100% scale, and highest quality. Turn off “fit to page” if your printer supports borderless A4.</p>
             </div>
             <div className="a4-preview-wrap">
               <div className="a4-shadow" />
               <div className="a4-preview">
-                {sheetUrl ? <img src={sheetUrl} alt="A4 print sheet containing four completed event strips" /> : <div className="a4-loading"><span className="spinner" /><strong>Arranging your strips</strong></div>}
+                {sheetUrl ? <img src={sheetUrl} alt={`A4 print sheet containing ${groups.length} completed event strip${groups.length === 1 ? "" : "s"}`} /> : <div className="a4-loading"><span className="spinner" /><strong>Arranging your strips</strong></div>}
               </div>
               <span className="a4-label">A4 · PORTRAIT</span>
             </div>
