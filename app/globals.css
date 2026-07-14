@@ -83,6 +83,8 @@ h1 em { color: #a86d16; font-weight: 400; }
 .ready-badge strong, .ready-badge small { display: block; }
 .ready-badge strong { color: var(--navy); font-family: Georgia, serif; font-size: 14px; }
 .ready-badge small { margin-top: 3px; color: #8e7244; text-transform: uppercase; letter-spacing: .12em; font-size: 8px; font-weight: 800; }
+.thank-you-badge { min-width: 172px; padding: 12px 17px; text-align: center; }
+.thank-you-badge strong { font-size: 15px; white-space: nowrap; }
 .workflow-bar { height: 58px; min-height: 0; padding: 8px clamp(24px, 5vw, 72px); display: flex; align-items: center; justify-content: center; gap: clamp(14px, 2.5vw, 38px); position: relative; z-index: 4; overflow: hidden; background: var(--navy); color: white; }
 .workflow-bar > div { display: flex; align-items: center; gap: 12px; min-width: 130px; }
 .step-number { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #b38a47; border-radius: 50%; color: #e7bd68; font-family: Georgia, serif; font-size: 12px; }

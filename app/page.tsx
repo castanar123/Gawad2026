@@ -759,7 +759,7 @@ export default function Home() {
                 <div className="photo-sample sample-two"><span>02</span></div>
                 <div className="photo-sample sample-three"><span>03</span></div>
               </div>
-              <div className="ready-badge"><span>✓</span><strong>Print ready</strong><small>A4 · 4 groups</small></div>
+              <div className="ready-badge thank-you-badge"><strong>Thank you for coming</strong></div>
             </div>
           </section>
         )}
