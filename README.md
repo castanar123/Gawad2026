@@ -15,6 +15,8 @@ Photos remain device-local and are cleared when a new A4 sheet begins. The downl
 
 Active photos, completed groups, and the current A4 sheet are also stored without re-encoding in the browser's IndexedDB. An accidental refresh, shutdown, or restart restores the last session. Starting a new A4 sheet clears that saved session. Captures use the camera's native feed and are adaptively enhanced into a canvas up to 7680 × 4320 pixels before strip composition.
 
+The camera screen includes a capture-light control. It cycles between a pre-capture white-screen flash, the active camera's hardware torch when that capability is available, and off. A USB DSLR presented as a webcam can supply the live feed, but model-specific physical shutter and synchronized flash control require a separate local companion built with the camera manufacturer's SDK.
+
 ## Offline installation
 
 The production site is an installable PWA. Open it once while online so the service worker can cache the booth, event template, logo, and built application files. Use **Install app** in the top bar or the browser's **Add to Home Screen / Install app** command. After installation, the booth can reopen and capture, review, export, and print photos without Wi-Fi. Camera permission and downloaded shot backups remain device-local.

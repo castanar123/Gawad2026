@@ -24,15 +24,7 @@ svg { stroke-linecap: round; stroke-linejoin: round; }
 .lspu-logo-source { width: 200px; height: auto; max-width: none; position: absolute; left: -41px; top: -25px; }
 .brand strong { font-family: Georgia, serif; font-size: 16px; display: block; }
 .brand small { display: block; margin-top: 2px; color: #8a6d39; font-weight: 700; font-size: 8px; letter-spacing: .25em; }
-.event-pill { padding: 8px 12px; border: 1px solid #b89a63; border-radius: 999px; color: #5d4a27; font-weight: 700; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; background: #fff8eb99; }
-.event-pill span { display: inline-block; width: 6px; height: 6px; background: var(--gold); border-radius: 50%; margin-right: 8px; box-shadow: 0 0 0 3px #c98c2224; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
-.pwa-install { min-height: 32px; padding: 0 11px; display: flex; align-items: center; gap: 8px; border: 1px solid #c4ad80; border-radius: 999px; background: #fff8ebad; color: #67502a; font-size: 7px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
-.pwa-install span { width: 7px; height: 7px; border-radius: 50%; background: #3e9b6c; box-shadow: 0 0 0 4px #3e9b6c1e; }
-.pwa-install.offline { border-color: #d0a351; background: #102a55; color: white; }
-.pwa-install.offline span { background: #efc66e; box-shadow: 0 0 0 4px #efc66e1f; }
-.pwa-message { max-width: 520px; min-height: 45px; padding: 10px 12px 10px 16px; display: flex; align-items: center; gap: 12px; position: fixed; z-index: 30; top: 104px; right: 24px; border: 1px solid #d0b36f; border-radius: 12px; background: #fffaf0f2; color: #66502d; box-shadow: 0 18px 45px #071a3b24; font-size: 10px; line-height: 1.45; backdrop-filter: blur(10px); }
-.pwa-message button { width: 27px; height: 27px; flex: 0 0 auto; border: 0; border-radius: 50%; background: var(--navy); color: white; }
 .sheet-progress { display: none; align-items: center; height: 36px; padding: 0 11px; border: 1px solid #cdbb98; border-radius: 10px; background: #fffaf0aa; }
 .sheet-progress span { color: var(--navy); font: 700 19px/1 Georgia, serif; }
 .sheet-progress i { margin-left: 4px; color: #907a54; font-style: normal; font-size: 9px; text-transform: uppercase; }
@@ -157,8 +149,7 @@ h1 em { color: #a86d16; font-weight: 400; }
 .pause-layer strong { margin-top: 18px; font: 500 38px Georgia, serif; }
 .pause-layer small { margin-top: 7px; color: #b4c0d0; }
 .pause-layer button { margin-top: 22px; min-height: 44px; padding: 0 22px; border: 0; border-radius: 999px; background: #d6a13e; color: var(--navy); font-size: 9px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
-.flash-layer { position: absolute; inset: 0; z-index: 8; background: white; animation: cameraFlash .2s ease-out both; }
-@keyframes cameraFlash { from { opacity: 1; } to { opacity: 0; } }
+.flash-layer { position: absolute; inset: 0; z-index: 8; background: #fffdf7; opacity: .97; }
 .camera-ready { position: absolute; z-index: 4; left: 22px; bottom: 22px; padding: 8px 11px; border-radius: 999px; background: #061731bf; color: white; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; backdrop-filter: blur(5px); }
 .camera-ready span { width: 7px; height: 7px; display: inline-block; margin-right: 7px; border-radius: 50%; background: #58d39a; box-shadow: 0 0 0 4px #58d39a20; }
 .camera-ready b { margin-left: 8px; padding-left: 8px; border-left: 1px solid #ffffff4d; color: #efc66e; font-size: 8px; font-weight: 800; }
@@ -315,7 +306,6 @@ h1 em { color: #a86d16; font-weight: 400; }
 
 @media (max-width: 760px) {
   .topbar { padding-inline: 16px; }
-  .event-pill { display: none; }
   .topbar-actions .sheet-progress b { display: none; }
   .hero { grid-template-columns: minmax(0, 1fr) 170px; gap: 12px; padding: 12px 20px; }
   .hero-copy { min-width: 0; }
@@ -343,8 +333,6 @@ h1 em { color: #a86d16; font-weight: 400; }
   .lspu-logo-source { width: 174px; left: -36px; top: -22px; }
   .brand strong { font-size: 13px; }
   .brand small { font-size: 6px; }
-  .pwa-install { min-height: 29px; padding: 0 7px; font-size: 6px; }
-  .pwa-message { left: 8px; right: 8px; top: 64px; }
   .sheet-progress { display: flex; }
   .sheet-progress b { display: none; }
   .sheet-progress { height: 30px; padding-inline: 8px; }

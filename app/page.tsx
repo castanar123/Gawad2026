@@ -2,21 +2,17 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { zipSync } from "fflate";
 
 type Stage = "welcome" | "camera" | "review" | "sheet";
+type CaptureLightMode = "off" | "screen" | "torch";
 
 type PhotoGroup = {
   id: string;
   shots: string[];
   stripUrl: string;
   caption?: string;
-};
-
-type InstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
 type PersistedSession = {
@@ -27,6 +23,7 @@ type PersistedSession = {
   selectedPhotoIndex: number;
   autoPrint: boolean;
   stripCaption?: string;
+  captureLightMode?: CaptureLightMode;
   updatedAt: number;
 };
 
@@ -41,23 +38,6 @@ const ENHANCED_HEIGHT = 4320;
 const SESSION_DATABASE = "gawad-parangal-photobooth";
 const SESSION_STORE = "sessions";
 const ACTIVE_SESSION_KEY = "active-sheet";
-
-function subscribeToOnlineStatus(listener: () => void) {
-  window.addEventListener("online", listener);
-  window.addEventListener("offline", listener);
-  return () => {
-    window.removeEventListener("online", listener);
-    window.removeEventListener("offline", listener);
-  };
-}
-
-function getOnlineStatus() {
-  return navigator.onLine;
-}
-
-function getServerOnlineStatus() {
-  return true;
-}
 
 function openSessionDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -131,6 +111,10 @@ const DownloadIcon = () => (
 
 const SwitchCameraIcon = () => (
   <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3" /></svg>
+);
+
+const FlashIcon = () => (
+  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m13.5 2-7 11h5l-1 9 7-12h-5l1-8Z" /></svg>
 );
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -345,6 +329,8 @@ export default function Home() {
   const [cameraOperation, setCameraOperation] = useState<"reset" | "switch" | null>(null);
   const [cameraResolution, setCameraResolution] = useState("");
   const [flash, setFlash] = useState(false);
+  const [captureLightMode, setCaptureLightMode] = useState<CaptureLightMode>("screen");
+  const [torchSupported, setTorchSupported] = useState(false);
   const [betweenShots, setBetweenShots] = useState(false);
   const [paused, setPaused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -355,12 +341,8 @@ export default function Home() {
   const [stripCaption, setStripCaption] = useState("");
   const [layoutMessage, setLayoutMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
-  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
-  const [offlineReady, setOfflineReady] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
-  const [installMessage, setInstallMessage] = useState("");
   const [expandedPreview, setExpandedPreview] = useState<{ src: string; alt: string } | null>(null);
-  const isOnline = useSyncExternalStore(subscribeToOnlineStatus, getOnlineStatus, getServerOnlineStatus);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runTokenRef = useRef(0);
@@ -370,6 +352,8 @@ export default function Home() {
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    setFlash(false);
+    setTorchSupported(false);
     setCameraState("idle");
   }, []);
 
@@ -379,24 +363,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const handleInstallPrompt = (event: Event) => {
-      event.preventDefault();
-      setInstallPrompt(event as InstallPromptEvent);
-    };
-
-    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
-
     if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
-      void navigator.serviceWorker.register("/sw.js", { scope: "/" }).then(() => navigator.serviceWorker.ready).then(() => {
-        setOfflineReady(true);
-      }).catch(() => {
-        setOfflineReady(false);
-      });
+      void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => undefined);
     }
-
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
-    };
   }, []);
 
   useEffect(() => {
@@ -409,6 +378,7 @@ export default function Home() {
       setSelectedPhotoIndex(savedSession.selectedPhotoIndex);
       setAutoPrint(savedSession.autoPrint);
       setStripCaption(savedSession.stripCaption ?? "");
+      setCaptureLightMode(savedSession.captureLightMode ?? "screen");
       if (savedSession.groups.length > 0 && savedSession.sheetUrl && savedSession.stage === "sheet") setStage("sheet");
       else if (savedSession.photos.every(Boolean)) setStage("review");
       else setStage("welcome");
@@ -420,8 +390,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!sessionLoaded) return;
-    void savePersistedSession({ groups, photos, sheetUrl, stage, selectedPhotoIndex, autoPrint, stripCaption, updatedAt: Date.now() }).catch(() => undefined);
-  }, [autoPrint, groups, photos, selectedPhotoIndex, sessionLoaded, sheetUrl, stage, stripCaption]);
+    void savePersistedSession({ groups, photos, sheetUrl, stage, selectedPhotoIndex, autoPrint, stripCaption, captureLightMode, updatedAt: Date.now() }).catch(() => undefined);
+  }, [autoPrint, captureLightMode, groups, photos, selectedPhotoIndex, sessionLoaded, sheetUrl, stage, stripCaption]);
 
   useEffect(() => {
     if (!expandedPreview) return;
@@ -496,6 +466,12 @@ export default function Home() {
       const video = await attachCamera();
       const videoTrack = stream.getVideoTracks()[0];
       const settings = videoTrack.getSettings();
+      const capabilities = typeof videoTrack.getCapabilities === "function"
+        ? videoTrack.getCapabilities() as MediaTrackCapabilities & { torch?: boolean }
+        : {} as MediaTrackCapabilities & { torch?: boolean };
+      const supportsTorch = capabilities.torch === true;
+      setTorchSupported(supportsTorch);
+      setCaptureLightMode((currentMode) => currentMode === "torch" && !supportsTorch ? "screen" : currentMode);
       videoTrack.contentHint = "detail";
       const videoDevices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput");
       setCameras(videoDevices);
@@ -540,17 +516,6 @@ export default function Home() {
     setCameraOperation("switch");
     await ensureCamera(nextCamera.deviceId);
     setCameraOperation(null);
-  };
-
-  const installOfflineApp = async () => {
-    if (!installPrompt) {
-      setInstallMessage(offlineReady ? "Offline files are cached. Use your browser menu and choose Install app or Add to Home Screen." : "Use your browser menu and choose Install app or Add to Home Screen after the first online visit.");
-      return;
-    }
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    setInstallMessage(choice.outcome === "accepted" ? "Photo Booth installed for offline use." : "Installation was cancelled. You can install it later from the browser menu.");
-    if (choice.outcome === "accepted") setInstallPrompt(null);
   };
 
   const captureFrame = () => {
@@ -604,6 +569,42 @@ export default function Home() {
     setPaused(false);
   };
 
+  const setCameraTorch = async (enabled: boolean) => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || !torchSupported) return false;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: enabled } as MediaTrackConstraintSet] });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const activateCaptureLight = async () => {
+    if (captureLightMode === "off") return;
+    if (captureLightMode === "torch" && await setCameraTorch(true)) {
+      await sleep(180);
+      return;
+    }
+    setFlash(true);
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await sleep(150);
+  };
+
+  const deactivateCaptureLight = async () => {
+    if (captureLightMode === "torch") await setCameraTorch(false);
+    setFlash(false);
+  };
+
+  const cycleCaptureLight = () => {
+    if (sequenceRunning) return;
+    const availableModes: CaptureLightMode[] = torchSupported ? ["screen", "torch", "off"] : ["screen", "off"];
+    setCaptureLightMode((currentMode) => {
+      const currentIndex = availableModes.indexOf(currentMode);
+      return availableModes[(currentIndex + 1 + availableModes.length) % availableModes.length];
+    });
+  };
+
   const runSequence = async (indices: number[]) => {
     if (!streamRef.current && !(await ensureCamera())) return;
     setReviewStripUrl(null);
@@ -630,12 +631,13 @@ export default function Home() {
         }
         if (runTokenRef.current !== token) return;
         setCountdown(null);
-        setFlash(true);
+        await activateCaptureLight();
+        if (runTokenRef.current !== token) return;
         const captured = captureFrame();
         workingPhotos[targetIndex] = captured;
         setPhotos([...workingPhotos]);
         await sleep(180);
-        setFlash(false);
+        await deactivateCaptureLight();
 
         if (position < indices.length - 1) {
           setBetweenShots(true);
@@ -646,6 +648,7 @@ export default function Home() {
     } catch (error) {
       setCameraMessage(error instanceof Error ? error.message : "The shot could not be captured.");
     } finally {
+      await deactivateCaptureLight();
       if (runTokenRef.current === token) {
         pausedRef.current = false;
         setPaused(false);
@@ -771,6 +774,7 @@ export default function Home() {
   const progressText = groups.length === 0
     ? "A new A4 sheet is ready"
     : `${groups.length} of ${GROUPS_PER_SHEET} groups ready`;
+  const captureLightLabel = captureLightMode === "torch" ? "Camera torch" : captureLightMode === "screen" ? "Screen flash" : "Flash off";
 
   return (
     <>
@@ -782,11 +786,8 @@ export default function Home() {
           </button>
           <div className="topbar-actions">
             <div className="sheet-progress"><span>{groups.length}</span><i>of {GROUPS_PER_SHEET}</i><b>{progressText}</b></div>
-            <button type="button" className={`pwa-install ${isOnline ? "" : "offline"}`} onClick={installOfflineApp}><span />{!isOnline ? "Offline mode" : installPrompt ? "Install app" : offlineReady ? "Offline ready" : "Enable offline"}</button>
-            <div className="event-pill"><span /> LSPU Los Baños Campus · 2026</div>
           </div>
         </header>
-        {installMessage && <div className="pwa-message no-print" role="status"><span>{installMessage}</span><button type="button" onClick={() => setInstallMessage("")} aria-label="Dismiss offline message">×</button></div>}
 
         {stage === "welcome" && (
           <section className="hero no-print">
@@ -853,6 +854,7 @@ export default function Home() {
                   <span className="camera-event-watermark"><b>5th</b><em>Gawad Parangal</em><small>2026 · LSPU Los Baños Campus</small></span>
                 </div>
                 <div className="camera-controls" aria-label="Camera controls">
+                  <button type="button" onClick={cycleCaptureLight} disabled={sequenceRunning || cameraState !== "ready"} aria-label={`Capture light: ${captureLightLabel}. Click to change mode.`}><FlashIcon /> <span>{captureLightLabel}</span></button>
                   <button type="button" onClick={resetCamera} disabled={sequenceRunning || cameraState === "starting"} aria-label="Reset camera"><RetryIcon /> <span>{cameraOperation === "reset" ? "Resetting" : "Reset camera"}</span></button>
                   <button type="button" onClick={switchCamera} disabled={sequenceRunning || cameraState === "starting" || cameras.length < 2} aria-label="Switch camera"><SwitchCameraIcon /> <span>{cameraOperation === "switch" ? "Switching" : cameras.length < 2 ? "One camera" : "Switch camera"}</span></button>
                 </div>
