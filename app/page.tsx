@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { zipSync } from "fflate";
 
 type Stage = "welcome" | "camera" | "review" | "sheet";
@@ -18,12 +18,95 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
+type PersistedSession = {
+  groups: PhotoGroup[];
+  photos: (string | null)[];
+  sheetUrl: string | null;
+  stage: Stage;
+  selectedPhotoIndex: number;
+  autoPrint: boolean;
+  updatedAt: number;
+};
+
 const TEMPLATE_URL = "/lspu-event-strip.png";
 const SHOTS_PER_GROUP = 3;
 const GROUPS_PER_SHEET = 4;
 const COUNTDOWN_SECONDS = 10;
 const A4_WIDTH = 2480;
 const A4_HEIGHT = 3508;
+const ENHANCED_WIDTH = 7680;
+const ENHANCED_HEIGHT = 4320;
+const SESSION_DATABASE = "gawad-parangal-photobooth";
+const SESSION_STORE = "sessions";
+const ACTIVE_SESSION_KEY = "active-sheet";
+
+function subscribeToOnlineStatus(listener: () => void) {
+  window.addEventListener("online", listener);
+  window.addEventListener("offline", listener);
+  return () => {
+    window.removeEventListener("online", listener);
+    window.removeEventListener("offline", listener);
+  };
+}
+
+function getOnlineStatus() {
+  return navigator.onLine;
+}
+
+function getServerOnlineStatus() {
+  return true;
+}
+
+function openSessionDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(SESSION_DATABASE, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(SESSION_STORE)) request.result.createObjectStore(SESSION_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadPersistedSession() {
+  if (typeof indexedDB === "undefined") return null;
+  const database = await openSessionDatabase();
+  return new Promise<PersistedSession | null>((resolve, reject) => {
+    const transaction = database.transaction(SESSION_STORE, "readonly");
+    const request = transaction.objectStore(SESSION_STORE).get(ACTIVE_SESSION_KEY);
+    request.onsuccess = () => resolve((request.result as PersistedSession | undefined) ?? null);
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => database.close();
+  });
+}
+
+async function savePersistedSession(session: PersistedSession) {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openSessionDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(SESSION_STORE, "readwrite");
+    transaction.objectStore(SESSION_STORE).put(session, ACTIVE_SESSION_KEY);
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function clearPersistedSession() {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openSessionDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(SESSION_STORE, "readwrite");
+    transaction.objectStore(SESSION_STORE).delete(ACTIVE_SESSION_KEY);
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
 
 const CameraIcon = () => (
   <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -203,11 +286,12 @@ function dataUrlToBytes(dataUrl: string) {
   return bytes;
 }
 
-function saveShotBackup(shots: string[], groupNumber: number) {
+function saveShotBackup(shots: string[], stripUrl: string, groupNumber: number) {
   const files = shots.reduce<Record<string, Uint8Array>>((backupFiles, shot, index) => {
     backupFiles[`shot-${String(index + 1).padStart(2, "0")}.jpg`] = dataUrlToBytes(shot);
     return backupFiles;
   }, {});
+  files["completed-event-strip.jpg"] = dataUrlToBytes(stripUrl);
   const zipped = zipSync(files, { level: 0 });
   const filename = `gawad-parangal-group-${String(groupNumber).padStart(2, "0")}-original-shots.zip`;
   saveBlob(new Blob([zipped], { type: "application/zip" }), filename);
@@ -248,12 +332,14 @@ export default function Home() {
   const [backupMessage, setBackupMessage] = useState("");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [offlineReady, setOfflineReady] = useState(false);
-  const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
   const [installMessage, setInstallMessage] = useState("");
+  const isOnline = useSyncExternalStore(subscribeToOnlineStatus, getOnlineStatus, getServerOnlineStatus);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runTokenRef = useRef(0);
   const pausedRef = useRef(false);
+  const captureNowRef = useRef(false);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -267,14 +353,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const updateConnection = () => setIsOnline(navigator.onLine);
     const handleInstallPrompt = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event as InstallPromptEvent);
     };
 
-    window.addEventListener("online", updateConnection);
-    window.addEventListener("offline", updateConnection);
     window.addEventListener("beforeinstallprompt", handleInstallPrompt);
 
     if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
@@ -286,11 +369,32 @@ export default function Home() {
     }
 
     return () => {
-      window.removeEventListener("online", updateConnection);
-      window.removeEventListener("offline", updateConnection);
       window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadPersistedSession().then((savedSession) => {
+      if (!active || !savedSession) return;
+      setGroups(savedSession.groups);
+      setPhotos(savedSession.photos);
+      setSheetUrl(savedSession.sheetUrl);
+      setSelectedPhotoIndex(savedSession.selectedPhotoIndex);
+      setAutoPrint(savedSession.autoPrint);
+      if (savedSession.groups.length === GROUPS_PER_SHEET && savedSession.sheetUrl) setStage("sheet");
+      else if (savedSession.photos.every(Boolean)) setStage("review");
+      else setStage("welcome");
+    }).catch(() => undefined).finally(() => {
+      if (active) setSessionLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionLoaded) return;
+    void savePersistedSession({ groups, photos, sheetUrl, stage, selectedPhotoIndex, autoPrint, updatedAt: Date.now() }).catch(() => undefined);
+  }, [autoPrint, groups, photos, selectedPhotoIndex, sessionLoaded, sheetUrl, stage]);
 
   const waitForVideo = async () => {
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -369,12 +473,13 @@ export default function Home() {
     }
   };
 
-  const openBooth = async () => {
+  const openBooth = async (resumeSession = false) => {
     setStage("camera");
-    setPhotos([null, null, null]);
+    if (!resumeSession) setPhotos([null, null, null]);
     setReviewStripUrl(null);
-    setSelectedPhotoIndex(0);
-    setShotIndex(0);
+    const firstMissingShot = photos.findIndex((photo) => !photo);
+    setSelectedPhotoIndex(resumeSession && firstMissingShot > -1 ? firstMissingShot : 0);
+    setShotIndex(resumeSession && firstMissingShot > -1 ? firstMissingShot : 0);
     setCountdown(null);
     await sleep(50);
     await ensureCamera();
@@ -411,25 +516,30 @@ export default function Home() {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) throw new Error("The camera is not ready yet.");
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const enhancementScale = Math.max(1, Math.min(ENHANCED_WIDTH / video.videoWidth, ENHANCED_HEIGHT / video.videoHeight));
+    canvas.width = Math.round(video.videoWidth * enhancementScale);
+    canvas.height = Math.round(video.videoHeight * enhancementScale);
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("The photo could not be captured.");
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
-    context.filter = "brightness(1.02) contrast(1.045) saturate(1.05)";
+    context.filter = "brightness(1.025) contrast(1.06) saturate(1.065)";
     if (mirrorCamera) {
       context.translate(canvas.width, 0);
       context.scale(-1, 1);
     }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.96);
+    return canvas.toDataURL("image/jpeg", 0.985);
   };
 
-  const waitForActiveDelay = async (milliseconds: number, token: number) => {
+  const waitForActiveDelay = async (milliseconds: number, token: number, allowInstantCapture = false) => {
     let remaining = milliseconds;
     while (remaining > 0) {
-      if (runTokenRef.current !== token) return false;
+      if (runTokenRef.current !== token) return "cancelled" as const;
+      if (allowInstantCapture && captureNowRef.current) {
+        captureNowRef.current = false;
+        return "capture-now" as const;
+      }
       if (pausedRef.current) {
         await sleep(120);
         continue;
@@ -438,7 +548,7 @@ export default function Home() {
       await sleep(interval);
       remaining -= interval;
     }
-    return runTokenRef.current === token;
+    return runTokenRef.current === token ? "complete" as const : "cancelled" as const;
   };
 
   const togglePause = () => {
@@ -447,11 +557,18 @@ export default function Home() {
     setPaused(nextPaused);
   };
 
+  const captureImmediately = () => {
+    captureNowRef.current = true;
+    pausedRef.current = false;
+    setPaused(false);
+  };
+
   const runSequence = async (indices: number[]) => {
     if (!streamRef.current && !(await ensureCamera())) return;
     setReviewStripUrl(null);
     const token = runTokenRef.current + 1;
     runTokenRef.current = token;
+    captureNowRef.current = false;
     pausedRef.current = false;
     setPaused(false);
     setSequenceRunning(true);
@@ -466,7 +583,9 @@ export default function Home() {
         for (let value = COUNTDOWN_SECONDS; value >= 1; value -= 1) {
           if (runTokenRef.current !== token) return;
           setCountdown(value);
-          if (!(await waitForActiveDelay(1000, token))) return;
+          const countdownResult = await waitForActiveDelay(1000, token, true);
+          if (countdownResult === "cancelled") return;
+          if (countdownResult === "capture-now") break;
         }
         if (runTokenRef.current !== token) return;
         setCountdown(null);
@@ -479,7 +598,7 @@ export default function Home() {
 
         if (position < indices.length - 1) {
           setBetweenShots(true);
-          if (!(await waitForActiveDelay(1250, token))) return;
+          if (await waitForActiveDelay(1250, token) === "cancelled") return;
         }
       }
       if (runTokenRef.current === token) setStage("review");
@@ -505,6 +624,7 @@ export default function Home() {
 
   const cancelCapture = () => {
     runTokenRef.current += 1;
+    captureNowRef.current = false;
     pausedRef.current = false;
     setPaused(false);
     setSequenceRunning(false);
@@ -520,12 +640,12 @@ export default function Home() {
     if (completedShots.length !== SHOTS_PER_GROUP) return;
     setIsComposing(true);
     setBackupMessage("");
-    setLayoutMessage("Saving the original 3-shot backup...");
+    setLayoutMessage("Building your high-resolution event strip...");
     try {
-      saveShotBackup(completedShots, groups.length + 1);
-      setBackupMessage(`Group ${groups.length + 1} original shots downloaded to this device.`);
-      setLayoutMessage("Building your high-resolution event strip...");
       const stripUrl = await composeStrip(completedShots);
+      setLayoutMessage("Saving three enhanced photos and the completed strip...");
+      saveShotBackup(completedShots, stripUrl, groups.length + 1);
+      setBackupMessage(`Group ${groups.length + 1} enhanced photos and completed strip downloaded to this device.`);
       const nextGroup: PhotoGroup = {
         id: `${Date.now()}-${groups.length}`,
         shots: completedShots,
@@ -571,6 +691,7 @@ export default function Home() {
   };
 
   const startNewSheet = () => {
+    void clearPersistedSession();
     setGroups([]);
     setPhotos([null, null, null]);
     setSheetUrl(null);
@@ -608,11 +729,11 @@ export default function Home() {
                 <div className="shot-count"><strong>3</strong><span>shots</span></div>
                 <div className="capture-rule" />
                 <div className="shot-count"><strong>10</strong><span>second timer</span></div>
-                <button type="button" className="start-button" onClick={openBooth}>
-                  <span><CameraIcon /></span> {groups.length ? `Capture group ${groups.length + 1}` : "Start photo session"} <b>→</b>
+                <button type="button" className="start-button" onClick={() => openBooth(photos.some(Boolean))}>
+                  <span><CameraIcon /></span> {photos.some(Boolean) ? "Resume saved group" : groups.length ? `Capture group ${groups.length + 1}` : "Start photo session"} <b>→</b>
                 </button>
               </div>
-              <p className="privacy-note"><span>●</span> Camera access stays on this device. Each approved group downloads a 3-shot backup ZIP.</p>
+              <p className="privacy-note"><span>●</span> Full-quality shots auto-save on this device until a new sheet starts. Each approved group downloads the three photos plus its completed strip.</p>
 
               {groups.length > 0 && (
                 <div className="group-queue" aria-label="Groups ready for printing">
@@ -663,7 +784,7 @@ export default function Home() {
                   <button type="button" onClick={resetCamera} disabled={sequenceRunning || cameraState === "starting"} aria-label="Reset camera"><RetryIcon /> <span>{cameraOperation === "reset" ? "Resetting" : "Reset camera"}</span></button>
                   <button type="button" onClick={switchCamera} disabled={sequenceRunning || cameraState === "starting" || cameras.length < 2} aria-label="Switch camera"><SwitchCameraIcon /> <span>{cameraOperation === "switch" ? "Switching" : cameras.length < 2 ? "One camera" : "Switch camera"}</span></button>
                 </div>
-                {sequenceRunning && <button type="button" className={`floating-pause-control ${paused ? "paused" : ""}`} onClick={togglePause}>{paused ? "▶ Resume capture" : "Ⅱ Pause timer"}</button>}
+                {sequenceRunning && <div className="floating-sequence-controls"><button type="button" className={`floating-pause-control ${paused ? "paused" : ""}`} onClick={togglePause}>{paused ? "▶ Resume" : "Ⅱ Pause"}</button><button type="button" className="capture-now-control" onClick={captureImmediately} disabled={countdown === null}><CameraIcon /> Take shot now</button></div>}
                 {cameraState === "starting" && <div className="camera-cover"><span className="spinner" /><strong>Opening camera</strong><small>Please allow access when your browser asks.</small></div>}
                 {cameraState === "error" && <div className="camera-cover error-cover"><b>!</b><strong>Camera needs attention</strong><small>{cameraMessage}</small><button type="button" onClick={() => ensureCamera()}>Try camera again</button></div>}
                 {countdown !== null && <div className="countdown"><small>Photo {shotIndex + 1} of {SHOTS_PER_GROUP}</small><strong key={countdown}>{countdown}</strong><span>Get ready</span></div>}
@@ -692,7 +813,7 @@ export default function Home() {
                   </button>
                 )}
                 {sequenceRunning && <div className="sequence-controls"><button type="button" className="pause-button" onClick={togglePause}>{paused ? "Resume" : "Pause"}</button><button type="button" className="secondary-wide" onClick={cancelCapture}>Cancel countdown</button></div>}
-                <p className="look-note">Look at the camera lens—not your reflection—for the best result.</p>
+                <p className="look-note">Look at the lens for the best result · Native camera feed · enhanced output up to 7680 × 4320.</p>
               </aside>
             </div>
           </section>
