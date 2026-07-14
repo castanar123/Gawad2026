@@ -11,6 +11,7 @@ type PhotoGroup = {
   id: string;
   shots: string[];
   stripUrl: string;
+  caption?: string;
 };
 
 type InstallPromptEvent = Event & {
@@ -25,6 +26,7 @@ type PersistedSession = {
   stage: Stage;
   selectedPhotoIndex: number;
   autoPrint: boolean;
+  stripCaption?: string;
   updatedAt: number;
 };
 
@@ -158,7 +160,7 @@ function drawImageCover(
   context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
 }
 
-async function composeStrip(shots: string[]) {
+async function composeStrip(shots: string[], stripCaption = "") {
   const [template, ...photos] = await Promise.all([loadImage(TEMPLATE_URL), ...shots.map(loadImage)]);
   const canvas = document.createElement("canvas");
   canvas.width = template.naturalWidth;
@@ -188,6 +190,26 @@ async function composeStrip(shots: string[]) {
     drawImageCover(context, photo, slot.x, slot.y, slot.width, slot.height);
     context.restore();
   });
+
+  const caption = stripCaption.trim();
+  if (caption) {
+    const maxWidth = 1500;
+    let fontSize = 58;
+    context.save();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = `700 ${fontSize}px Arial, Helvetica, sans-serif`;
+    while (context.measureText(caption).width > maxWidth && fontSize > 30) {
+      fontSize -= 2;
+      context.font = `700 ${fontSize}px Arial, Helvetica, sans-serif`;
+    }
+    context.lineWidth = 10;
+    context.strokeStyle = "rgba(255, 250, 240, .94)";
+    context.fillStyle = "#071a3b";
+    context.strokeText(caption, canvas.width / 2, 505, maxWidth);
+    context.fillText(caption, canvas.width / 2, 505, maxWidth);
+    context.restore();
+  }
 
   return canvas.toDataURL("image/jpeg", 0.97);
 }
@@ -330,12 +352,14 @@ export default function Home() {
   const [reviewStripUrl, setReviewStripUrl] = useState<string | null>(null);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
   const [autoPrint, setAutoPrint] = useState(true);
+  const [stripCaption, setStripCaption] = useState("");
   const [layoutMessage, setLayoutMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [offlineReady, setOfflineReady] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [installMessage, setInstallMessage] = useState("");
+  const [expandedPreview, setExpandedPreview] = useState<{ src: string; alt: string } | null>(null);
   const isOnline = useSyncExternalStore(subscribeToOnlineStatus, getOnlineStatus, getServerOnlineStatus);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -384,6 +408,7 @@ export default function Home() {
       setSheetUrl(savedSession.sheetUrl);
       setSelectedPhotoIndex(savedSession.selectedPhotoIndex);
       setAutoPrint(savedSession.autoPrint);
+      setStripCaption(savedSession.stripCaption ?? "");
       if (savedSession.groups.length > 0 && savedSession.sheetUrl && savedSession.stage === "sheet") setStage("sheet");
       else if (savedSession.photos.every(Boolean)) setStage("review");
       else setStage("welcome");
@@ -395,8 +420,17 @@ export default function Home() {
 
   useEffect(() => {
     if (!sessionLoaded) return;
-    void savePersistedSession({ groups, photos, sheetUrl, stage, selectedPhotoIndex, autoPrint, updatedAt: Date.now() }).catch(() => undefined);
-  }, [autoPrint, groups, photos, selectedPhotoIndex, sessionLoaded, sheetUrl, stage]);
+    void savePersistedSession({ groups, photos, sheetUrl, stage, selectedPhotoIndex, autoPrint, stripCaption, updatedAt: Date.now() }).catch(() => undefined);
+  }, [autoPrint, groups, photos, selectedPhotoIndex, sessionLoaded, sheetUrl, stage, stripCaption]);
+
+  useEffect(() => {
+    if (!expandedPreview) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpandedPreview(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [expandedPreview]);
 
   const waitForVideo = async () => {
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -429,13 +463,18 @@ export default function Home() {
     const completedShots = photos.filter((photo): photo is string => Boolean(photo));
     if (completedShots.length !== SHOTS_PER_GROUP) return;
     let active = true;
-    void composeStrip(completedShots).then((strip) => {
-      if (active) setReviewStripUrl(strip);
-    }).catch((error) => {
-      if (active) setCameraMessage(error instanceof Error ? error.message : "The strip preview could not be prepared.");
-    });
-    return () => { active = false; };
-  }, [photos, stage]);
+    const timer = window.setTimeout(() => {
+      void composeStrip(completedShots, stripCaption).then((strip) => {
+        if (active) setReviewStripUrl(strip);
+      }).catch((error) => {
+        if (active) setCameraMessage(error instanceof Error ? error.message : "The strip preview could not be prepared.");
+      });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [photos, stage, stripCaption]);
 
   const ensureCamera = async (deviceId?: string) => {
     setCameraState("starting");
@@ -633,6 +672,7 @@ export default function Home() {
     setCountdown(null);
     setBetweenShots(false);
     setPhotos([null, null, null]);
+    setStripCaption("");
     stopCamera();
     setStage("welcome");
   };
@@ -644,7 +684,7 @@ export default function Home() {
     setBackupMessage("");
     setLayoutMessage("Building your high-resolution event strip...");
     try {
-      const stripUrl = await composeStrip(completedShots);
+      const stripUrl = await composeStrip(completedShots, stripCaption);
       setLayoutMessage("Saving three enhanced photos and the completed strip...");
       saveShotBackup(completedShots, stripUrl, groups.length + 1);
       setBackupMessage(`Group ${groups.length + 1} enhanced photos and completed strip downloaded to this device.`);
@@ -652,6 +692,7 @@ export default function Home() {
         id: `${Date.now()}-${groups.length}`,
         shots: completedShots,
         stripUrl,
+        caption: stripCaption.trim(),
       };
       const nextGroups = [...groups, nextGroup];
       setGroups(nextGroups);
@@ -669,6 +710,7 @@ export default function Home() {
         }
       } else {
         setPhotos([null, null, null]);
+        setStripCaption("");
         setShotIndex(0);
         setStage("welcome");
         setLayoutMessage("");
@@ -720,6 +762,7 @@ export default function Home() {
     void clearPersistedSession();
     setGroups([]);
     setPhotos([null, null, null]);
+    setStripCaption("");
     setSheetUrl(null);
     setLayoutMessage("");
     setStage("welcome");
@@ -854,6 +897,10 @@ export default function Home() {
               <p className="eyebrow"><span /> Group {groups.length + 1} review</p>
               <h2>Three great moments.</h2>
               <p>Keep them all, or retake any photo before it goes into the event strip.</p>
+              <label className="strip-caption-field">
+                <span>Optional text above the photos</span>
+                <input type="text" value={stripCaption} maxLength={60} onChange={(event) => setStripCaption(event.target.value)} placeholder="Name, organization, #hashtag — or leave blank" />
+              </label>
             </div>
             <div className="review-workspace">
               <div className="strip-review-card">
@@ -863,12 +910,16 @@ export default function Home() {
                   {photos.map((photo, index) => (
                     <button type="button" className={`strip-photo-target target-${index + 1} ${selectedPhotoIndex === index ? "selected" : ""}`} key={index} onClick={() => setSelectedPhotoIndex(index)} aria-label={`Zoom photo ${index + 1}`} disabled={!photo || isComposing}><span>0{index + 1}</span></button>
                   ))}
+                  {reviewStripUrl && <button type="button" className="maximize-preview" onClick={() => setExpandedPreview({ src: reviewStripUrl, alt: "Full event strip preview" })} aria-label="Maximize the completed strip preview"><span aria-hidden="true">⛶</span></button>}
                 </div>
               </div>
 
               <div className="selected-photo-card">
                 <div className="selected-photo-heading"><p><span>Selected photo</span><strong>Photo {selectedPhotoIndex + 1} of {SHOTS_PER_GROUP}</strong></p><small>Zoomed preview</small></div>
-                <div className="selected-photo-zoom">{photos[selectedPhotoIndex] && <img src={photos[selectedPhotoIndex]} alt={`Selected photo ${selectedPhotoIndex + 1} enlarged preview`} />}</div>
+                <div className="selected-photo-zoom">
+                  {photos[selectedPhotoIndex] && <img src={photos[selectedPhotoIndex]} alt={`Selected photo ${selectedPhotoIndex + 1} enlarged preview`} />}
+                  {photos[selectedPhotoIndex] && <button type="button" className="maximize-preview" onClick={() => setExpandedPreview({ src: photos[selectedPhotoIndex] as string, alt: `Full preview of photo ${selectedPhotoIndex + 1}` })} aria-label={`Maximize photo ${selectedPhotoIndex + 1} preview`}><span aria-hidden="true">⛶</span></button>}
+                </div>
                 <div className="photo-selector" aria-label="Choose a photo to inspect">
                   {photos.map((photo, index) => (
                     <button type="button" className={selectedPhotoIndex === index ? "selected" : ""} key={index} onClick={() => setSelectedPhotoIndex(index)} aria-label={`Select photo ${index + 1}`}>{photo && <img src={photo} alt="" />}<span>0{index + 1}</span></button>
@@ -919,7 +970,7 @@ export default function Home() {
             <div className="a4-preview-wrap">
               <div className="a4-shadow" />
               <div className="a4-preview">
-                {sheetUrl ? <img src={sheetUrl} alt={`A4 print sheet containing ${groups.length} completed event strip${groups.length === 1 ? "" : "s"}`} /> : <div className="a4-loading"><span className="spinner" /><strong>Arranging your strips</strong></div>}
+                {sheetUrl ? <><img src={sheetUrl} alt={`A4 print sheet containing ${groups.length} completed event strip${groups.length === 1 ? "" : "s"}`} /><button type="button" className="maximize-preview" onClick={() => setExpandedPreview({ src: sheetUrl, alt: "Full A4 photo-strip sheet preview" })} aria-label="Maximize the A4 sheet preview"><span aria-hidden="true">⛶</span></button></> : <div className="a4-loading"><span className="spinner" /><strong>Arranging your strips</strong></div>}
               </div>
               <span className="a4-label">A4 · PORTRAIT</span>
             </div>
@@ -937,6 +988,12 @@ export default function Home() {
       </main>
 
       {sheetUrl && <div className="print-only"><img src={sheetUrl} alt="Printable A4 photo strip sheet" /></div>}
+      {expandedPreview && (
+        <div className="preview-lightbox no-print" role="dialog" aria-modal="true" aria-label={expandedPreview.alt}>
+          <button type="button" className="close-preview" onClick={() => setExpandedPreview(null)} aria-label="Close full-screen preview">× <span>Close</span></button>
+          <img src={expandedPreview.src} alt={expandedPreview.alt} />
+        </div>
+      )}
     </>
   );
 }
