@@ -3,6 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useRef, useState } from "react";
+import { Peer, type DataConnection, type MediaConnection } from "peerjs";
 
 type PhoneStatus = "ready" | "opening" | "pairing" | "connected" | "capturing" | "error";
 type ImageCaptureLike = { takePhoto(settings?: Record<string, unknown>): Promise<Blob> };
@@ -13,22 +14,6 @@ const PEER_CONFIG: RTCConfiguration = {
 };
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function waitForIceGathering(peer: RTCPeerConnection, timeout = 6500) {
-  if (peer.iceGatheringState === "complete") return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const finish = () => {
-      peer.removeEventListener("icegatheringstatechange", checkState);
-      window.clearTimeout(timer);
-      resolve();
-    };
-    const checkState = () => {
-      if (peer.iceGatheringState === "complete") finish();
-    };
-    const timer = window.setTimeout(finish, timeout);
-    peer.addEventListener("icegatheringstatechange", checkState);
-  });
-}
 
 function blobFromVideo(video: HTMLVideoElement) {
   if (!video.videoWidth || !video.videoHeight) throw new Error("The phone camera is not ready yet.");
@@ -43,22 +28,22 @@ function blobFromVideo(video: HTMLVideoElement) {
   });
 }
 
-async function sendBlobInChunks(channel: RTCDataChannel, requestId: string, blob: Blob) {
+async function sendBlobInChunks(channel: DataConnection, requestId: string, blob: Blob) {
   channel.send(JSON.stringify({ type: "photo-start", requestId, size: blob.size, mime: blob.type || "image/jpeg" }));
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const chunkSize = 48 * 1024;
   for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    while (channel.bufferedAmount > 512 * 1024 && channel.readyState === "open") await sleep(20);
-    if (channel.readyState !== "open") throw new Error("The booth connection was interrupted.");
+    while ((channel.dataChannel?.bufferedAmount || 0) > 512 * 1024 && channel.open) await sleep(20);
+    if (!channel.open) throw new Error("The booth connection was interrupted.");
     channel.send(bytes.slice(offset, Math.min(offset + chunkSize, bytes.length)));
   }
-  while (channel.bufferedAmount > 0 && channel.readyState === "open") await sleep(20);
+  while ((channel.dataChannel?.bufferedAmount || 0) > 0 && channel.open) await sleep(20);
   channel.send(JSON.stringify({ type: "photo-end", requestId }));
 }
 
 export default function PhoneCameraPage() {
   const [room, setRoom] = useState("");
-  const [token, setToken] = useState("");
+  const [secret, setSecret] = useState("");
   const [status, setStatus] = useState<PhoneStatus>("ready");
   const [message, setMessage] = useState("Open your camera, then keep this page visible while the booth takes the photos.");
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
@@ -66,17 +51,18 @@ export default function PhoneCameraPage() {
   const [screenFlash, setScreenFlash] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const peerRef = useRef<Peer | null>(null);
+  const callRef = useRef<MediaConnection | null>(null);
   const senderRef = useRef<RTCRtpSender | null>(null);
-  const channelRef = useRef<RTCDataChannel | null>(null);
+  const channelRef = useRef<DataConnection | null>(null);
   const pairingRunRef = useRef(0);
   const facingModeRef = useRef<"environment" | "user">("environment");
 
   useEffect(() => {
     const loadPairingLink = () => {
       const params = new URLSearchParams(window.location.search);
-      setRoom((params.get("room") || "").toUpperCase());
-      setToken(params.get("token") || "");
+      setRoom(params.get("room") || "");
+      setSecret(params.get("secret") || "");
     };
     window.queueMicrotask(loadPairingLink);
   }, []);
@@ -84,7 +70,8 @@ export default function PhoneCameraPage() {
   useEffect(() => () => {
     pairingRunRef.current += 1;
     channelRef.current?.close();
-    peerRef.current?.close();
+    callRef.current?.close();
+    peerRef.current?.destroy();
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
@@ -128,7 +115,7 @@ export default function PhoneCameraPage() {
     const channel = channelRef.current;
     const video = videoRef.current;
     const track = streamRef.current?.getVideoTracks()[0];
-    if (!channel || channel.readyState !== "open" || !video || !track) throw new Error("The phone camera is not connected.");
+    if (!channel?.open || !video || !track) throw new Error("The phone camera is not connected.");
     setStatus("capturing");
     setMessage("Taking the full-quality photo…");
     let torchEnabled = false;
@@ -156,37 +143,36 @@ export default function PhoneCameraPage() {
       setScreenFlash(false);
       if (torchEnabled) await setTorch(false);
       const errorMessage = error instanceof Error ? error.message : "The phone could not take the photo.";
-      if (channel.readyState === "open") channel.send(JSON.stringify({ type: "capture-error", requestId, message: errorMessage }));
+      if (channel.open) channel.send(JSON.stringify({ type: "capture-error", requestId, message: errorMessage }));
       setStatus("error");
       setMessage(errorMessage);
     }
   };
 
-  const connectChannel = (channel: RTCDataChannel) => {
+  const connectChannel = (channel: DataConnection) => {
     channelRef.current = channel;
-    channel.binaryType = "arraybuffer";
-    channel.onopen = () => {
+    channel.on("open", () => {
       setStatus("connected");
       setMessage("Connected to the booth. Keep this phone aimed at the guests—the booth controls the countdown and shutter.");
-    };
-    channel.onclose = () => {
+    });
+    channel.on("close", () => {
       setStatus("error");
       setMessage("The booth disconnected. Reopen the QR link to pair again.");
-    };
-    channel.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
+    });
+    channel.on("data", (data) => {
+      if (typeof data !== "string") return;
       try {
-        const command = JSON.parse(event.data) as { type?: string; requestId?: string; lightMode?: "off" | "screen" | "torch" };
+        const command = JSON.parse(data) as { type?: string; requestId?: string; lightMode?: "off" | "screen" | "torch" };
         if (command.type === "capture" && command.requestId) void capturePhoto(command.requestId, command.lightMode || "off");
         if (command.type === "switch-camera") void switchPhoneCamera();
       } catch {
         // Ignore malformed control messages from a stale connection.
       }
-    };
+    });
   };
 
   const startPhoneCamera = async () => {
-    if (!room || !token) {
+    if (!room || !secret) {
       setStatus("error");
       setMessage("This pairing link is incomplete. Scan the QR code shown on the booth again.");
       return;
@@ -201,41 +187,30 @@ export default function PhoneCameraPage() {
       setStatus("pairing");
       setMessage("Camera ready. Connecting securely to the booth…");
 
-      const peer = new RTCPeerConnection(PEER_CONFIG);
+      const peer = new Peer({ config: PEER_CONFIG, debug: 1 });
       peerRef.current = peer;
-      senderRef.current = peer.addTrack(stream.getVideoTracks()[0], stream);
-      peer.ondatachannel = (event) => connectChannel(event.channel);
-      peer.onconnectionstatechange = () => {
-        if (peer.connectionState === "connected") {
-          setStatus("connected");
-          setMessage("Connected to the booth. The full-quality still photo will be sent after each countdown.");
-        } else if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+      peer.on("open", () => {
+        if (pairingRunRef.current !== run) return;
+        const channel = peer.connect(room, { metadata: { secret }, reliable: true, serialization: "binary" });
+        connectChannel(channel);
+        const call = peer.call(room, stream, { metadata: { secret } });
+        callRef.current = call;
+        senderRef.current = call.peerConnection.getSenders().find((sender) => sender.track?.kind === "video") || null;
+        call.on("error", () => {
           setStatus("error");
-          setMessage("The phone lost its booth connection. Scan the QR code again to reconnect.");
-        }
-      };
-
-      let offer: RTCSessionDescriptionInit | null = null;
-      for (let attempt = 0; attempt < 90 && pairingRunRef.current === run; attempt += 1) {
-        const response = await fetch(`/api/remote-camera/session/${room}`, { headers: { "x-camera-token": token }, cache: "no-store" });
-        if (!response.ok) throw new Error("The pairing code has expired. Create a new phone connection on the booth.");
-        const session = await response.json() as { offer?: RTCSessionDescriptionInit | null };
-        if (session.offer) {
-          offer = session.offer;
-          break;
-        }
-        await sleep(700);
-      }
-      if (!offer || pairingRunRef.current !== run) throw new Error("The booth did not answer this pairing request.");
-      await peer.setRemoteDescription(offer);
-      await peer.setLocalDescription(await peer.createAnswer());
-      await waitForIceGathering(peer);
-      const response = await fetch(`/api/remote-camera/session/${room}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json", "x-camera-token": token },
-        body: JSON.stringify({ role: "phone", answer: peer.localDescription, status: "phone-ready" }),
+          setMessage("The phone live preview could not reach the booth. Keep both devices online and scan a new QR code.");
+        });
+        call.on("close", () => {
+          if (peerRef.current?.destroyed) return;
+          setStatus("error");
+          setMessage("The booth ended the phone camera session.");
+        });
       });
-      if (!response.ok) throw new Error("The booth pairing session expired before the phone connected.");
+      peer.on("error", (error) => {
+        if (pairingRunRef.current !== run) return;
+        setStatus("error");
+        setMessage(error.type === "network" ? "The pairing service is unreachable. Check this phone’s internet connection." : "The phone could not reach the booth. Scan a new QR code and try again.");
+      });
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "The phone camera could not connect.");
@@ -269,7 +244,7 @@ export default function PhoneCameraPage() {
     <main className={`phone-camera-page status-${status}`}>
       <header className="phone-camera-header">
         <span className="phone-brand-mark"><img src="/lspu-brand-source.png" alt="LSPU" /></span>
-        <p><strong>Gawad Parangal</strong><small>PHONE CAMERA · ROOM {room || "—"}</small></p>
+        <p><strong>Gawad Parangal</strong><small>PHONE CAMERA · ROOM {room ? room.slice(0, 8).toUpperCase() : "—"}</small></p>
       </header>
       <section className="phone-camera-stage">
         <video ref={videoRef} muted playsInline aria-label="Phone camera preview" />
